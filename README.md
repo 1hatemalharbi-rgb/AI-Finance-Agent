@@ -55,6 +55,9 @@ FINANCE-AI-COMPANION/
 ├── demo.py
 
 
+---
+
+
 ## Direction
 
 The system is gradually evolving towards:
