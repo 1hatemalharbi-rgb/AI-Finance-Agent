@@ -39,21 +39,17 @@ The project is still under active development and is mainly focused on:
 - Building a clean and extensible architecture.
 
 ---
-
-## Project Structure (Current)
-
 FINANCE-AI-COMPANION/
 ├── data/
-│ └── state.json
+│   └── state.json
 ├── tests/
-│ └── test_finance_engine.py
+│   └── test_finance_engine.py
 ├── app.py
 ├── finance_engine.py
 ├── intent_router.py
 ├── storage.py
 ├── schemas.py
 ├── demo.py
-
 
 ---
 
