@@ -1,8 +1,14 @@
 """
 Streamlit multi-page app for Personal Finance AI Companion.
 Pages: Profile Setup, Chat Assistant, Dashboard
+
+ENHANCED VERSION with:
+- Chat-based profile editing
+- Unrealistic goal warnings
+- Better typo handling
 """
 import os
+import re
 import streamlit as st
 from dotenv import load_dotenv
 from intent_router import IntentRouter
@@ -52,7 +58,7 @@ def save_state():
 
 
 def process_chat_input(user_input: str) -> str:
-    """Process chat input with improved intent handling."""
+    """Process chat input with improved intent handling including profile updates."""
     engine = st.session_state.engine
     router = st.session_state.router
     
@@ -66,8 +72,53 @@ def process_chat_input(user_input: str) -> str:
     except Exception as e:
         return f"❌ Error: {str(e)}\n\nPlease try again or type 'help' for guidance."
     
-    # Handle intents
-    if intent.intent == "AFFORDABILITY_CHECK":
+    # Handle SET_INCOME intent (from chat)
+    if intent.intent == "SET_INCOME":
+        if not intent.amount:
+            return "💭 What is your monthly salary? (e.g., 12000)"
+        
+        result = engine.set_income(intent.amount)
+        save_state()
+        return f"## ✅ Income Updated\n\n{result}\n\n💡 Your budgets have been recalculated!"
+    
+    # Handle SET_FIXED_EXPENSE intent (from chat)
+    elif intent.intent == "SET_FIXED_EXPENSE":
+        if not intent.amount:
+            expense_name = intent.fixed_expense_name or "expense"
+            return f"💭 How much is your **{expense_name}**? (monthly amount)"
+        
+        expense_name = intent.fixed_expense_name or "expense"
+        result = engine.add_fixed_expense(expense_name, intent.amount, "monthly")
+        save_state()
+        return f"## ✅ Fixed Expense Updated\n\n{result}\n\n💡 Your budgets have been recalculated!"
+    
+    # Handle SET_GOAL intent (from chat)
+    elif intent.intent == "SET_GOAL":
+        if not intent.goal_amount:
+            return "💭 How much do you want to save? (e.g., 50000)"
+        
+        if not intent.goal_timeframe:
+            st.session_state.pending_intent = {
+                "intent": "SET_GOAL",
+                "goal_item": intent.goal_item or "goal",
+                "goal_amount": intent.goal_amount
+            }
+            return f"💭 In how many months? (e.g., 6, 12, 24)"
+        
+        # Extract months from timeframe
+        timeframe_months = 12  # Default
+        if intent.goal_timeframe:
+            numbers = re.findall(r'\d+', intent.goal_timeframe)
+            if numbers:
+                timeframe_months = int(numbers[0])
+        
+        goal_item = intent.goal_item or "goal"
+        result = engine.set_goal(goal_item, intent.goal_amount, timeframe_months)
+        save_state()
+        return f"## 🎯 Goal Updated\n\n{result}"
+    
+    # Handle AFFORDABILITY_CHECK
+    elif intent.intent == "AFFORDABILITY_CHECK":
         if not intent.amount:
             st.session_state.pending_intent = {
                 "intent": "AFFORDABILITY_CHECK",
@@ -95,6 +146,7 @@ def process_chat_input(user_input: str) -> str:
         
         return response
     
+    # Handle LOG_PURCHASE
     elif intent.intent == "LOG_PURCHASE":
         if not intent.amount:
             st.session_state.pending_intent = {
@@ -117,6 +169,7 @@ def process_chat_input(user_input: str) -> str:
         
         return response
     
+    # Handle LOG_EXPENSE
     elif intent.intent == "LOG_EXPENSE":
         if not intent.amount:
             category = intent.category or "expense"
@@ -132,28 +185,49 @@ def process_chat_input(user_input: str) -> str:
         
         return response
     
+    # Handle SHOW_STATUS
     elif intent.intent == "SHOW_STATUS":
         return engine.get_status_summary()
     
+    # Handle HELP
     elif intent.intent == "HELP":
         return get_chat_help_text()
     
+    # Handle UNKNOWN with low confidence warning
     else:
-        return ("💡 **I can help you with:**\n\n"
-                "- **'Can I buy [item] for [amount]?'** - Check affordability\n"
-                "- **'I bought [item] for [amount]'** - Log a purchase\n"
-                "- **'I spent [amount] on [category]'** - Log an expense\n"
-                "- **'summary'** or **'status'** - View your budget\n\n"
-                "Try asking me one of these!")
+        if hasattr(intent, 'confidence') and intent.confidence < 0.5:
+            return ("💡 **I didn't quite understand that.**\n\n"
+                    "**I can help you with:**\n\n"
+                    "**Setup & Updates:**\n"
+                    "- 'My salary is 12000'\n"
+                    "- 'Change rent to 3000'\n"
+                    "- 'Update my goal to 50000 in 6 months'\n\n"
+                    "**Daily Use:**\n"
+                    "- 'Can I buy [item] for [amount]?' - Check affordability\n"
+                    "- 'I bought [item] for [amount]' - Log a purchase\n"
+                    "- 'I spent [amount] on [category]' - Log an expense\n"
+                    "- 'summary' or 'status' - View your budget\n\n"
+                    "Try asking me one of these!")
+        else:
+            return ("💡 **I can help you with:**\n\n"
+                    "**Setup & Updates:**\n"
+                    "- 'My salary is 12000'\n"
+                    "- 'Change rent to 3000'\n"
+                    "- 'Update my goal to 50000 in 6 months'\n\n"
+                    "**Daily Use:**\n"
+                    "- 'Can I buy [item] for [amount]?' - Check affordability\n"
+                    "- 'I bought [item] for [amount]' - Log a purchase\n"
+                    "- 'I spent [amount] on [category]' - Log an expense\n"
+                    "- 'summary' or 'status' - View your budget\n\n"
+                    "Try asking me one of these!")
 
 
 def handle_pending_intent(user_input: str) -> str:
-    """Handle pending intent when waiting for amount."""
+    """Handle pending intent when waiting for amount or other info."""
     engine = st.session_state.engine
     pending = st.session_state.pending_intent
     
-    # Extract amount
-    import re
+    # Extract numbers
     numbers = re.findall(r'\d+(?:\.\d+)?', user_input)
     
     if not numbers:
@@ -161,13 +235,23 @@ def handle_pending_intent(user_input: str) -> str:
     
     amount = float(numbers[0])
     intent_type = pending["intent"]
-    item = pending["item"]
     
     # Clear pending intent
     st.session_state.pending_intent = None
     
-    # Process based on intent type
-    if intent_type == "AFFORDABILITY_CHECK":
+    # Process SET_GOAL pending (waiting for timeframe)
+    if intent_type == "SET_GOAL":
+        goal_item = pending.get("goal_item", "goal")
+        goal_amount = pending.get("goal_amount", amount)
+        timeframe_months = int(amount)
+        
+        result = engine.set_goal(goal_item, goal_amount, timeframe_months)
+        save_state()
+        return f"## 🎯 Goal Set\n\n{result}"
+    
+    # Process AFFORDABILITY_CHECK
+    elif intent_type == "AFFORDABILITY_CHECK":
+        item = pending["item"]
         result = engine.check_affordability(item, amount)
         
         response = f"## {'✅ RECOMMENDED' if result.recommended else '❌ NOT RECOMMENDED'}\n\n"
@@ -184,7 +268,9 @@ def handle_pending_intent(user_input: str) -> str:
         
         return response
     
+    # Process LOG_PURCHASE
     elif intent_type == "LOG_PURCHASE":
+        item = pending["item"]
         engine.log_purchase(item, amount)
         save_state()
         
@@ -202,6 +288,13 @@ def get_chat_help_text() -> str:
     return """## 💬 Chat Commands
 
 Ask me naturally! Here are some examples:
+
+**Setup & Profile Updates:**
+- "My salary is 12000"
+- "Change rent to 3000"
+- "Update my income to 15000"
+- "I want to save 50000 for a car in 6 months"
+- "Change my goal to 100000 for house in 24 months"
 
 **Check Affordability:**
 - "Can I buy a laptop for 5000?"
@@ -223,7 +316,7 @@ Ask me naturally! Here are some examples:
 - "How much do I have left?"
 - "Summary"
 
-💡 **Tip:** I understand casual language! Try "can i buy", "thinking of getting", "already bought", etc.
+💡 **Tip:** I understand typos! "bogt" = "bought", "salery" = "salary"
 """
 
 
@@ -231,6 +324,8 @@ def show_profile_page():
     """Display the profile setup page."""
     st.title("👤 Financial Profile Setup")
     st.write("Set up your financial information to get personalized budget recommendations.")
+    
+    st.info("💡 **Pro Tip:** You can also update your profile through the Chat Assistant by saying things like 'My salary is 12000' or 'Change rent to 3000'!")
     
     state = st.session_state.state
     engine = st.session_state.engine
@@ -292,6 +387,11 @@ def show_profile_page():
     
     if state.goal:
         st.success(f"🎯 Current Goal: **{state.goal.item}** - {state.goal.target_amount:,.0f} SAR in {state.goal.timeframe_months} months")
+        
+        # Show warning if goal is unrealistic
+        if state.goal.required_monthly_savings > state.monthly_income * 0.8:
+            st.warning("⚠️ This goal may be too unrealistic for your income level. Consider extending the time or reducing the amount.")
+        
         if st.button("Remove Goal"):
             state.goal = None
             save_state()
@@ -307,9 +407,14 @@ def show_profile_page():
                 goal_months = st.number_input("Months", min_value=1, max_value=120, value=12)
             
             if st.button("Set Goal") and goal_item and goal_amount > 0:
-                engine.set_goal(goal_item, goal_amount, goal_months)
+                result = engine.set_goal(goal_item, goal_amount, goal_months)
                 save_state()
-                st.success(f"✅ Goal set!")
+                
+                # Check if warning in result
+                if "⚠️" in result or "UNREALISTIC" in result or "IMPOSSIBLE" in result:
+                    st.warning(result)
+                else:
+                    st.success(f"✅ Goal set!")
                 st.rerun()
     
     st.divider()
@@ -368,14 +473,7 @@ def show_chat_page():
     """Display the chat assistant page."""
     st.title("💬 Finance Chat Assistant")
     
-    # Check if profile is set up
-    if st.session_state.state.monthly_income == 0:
-        st.warning("⚠️ Please set up your profile first!")
-        if st.button("Go to Profile Setup"):
-            st.rerun()
-        return
-    
-    st.write("Ask me about purchases, expenses, or your budget!")
+    st.write("Ask me about purchases, expenses, your budget, or update your profile!")
     
     # Display chat history
     for message in st.session_state.messages:
@@ -383,7 +481,7 @@ def show_chat_page():
             st.markdown(message["content"])
     
     # Chat input
-    if prompt := st.chat_input("Ask me anything... (e.g., 'Can I buy a laptop for 5000?')"):
+    if prompt := st.chat_input("Ask me anything... (e.g., 'Can I buy a laptop for 5000?' or 'Change my salary to 15000')"):
         # Add user message
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
@@ -508,6 +606,10 @@ def show_dashboard_page():
         # Monthly requirement
         st.info(f"📅 You need to save **{goal.required_monthly_savings:,.0f} SAR** per month to reach your goal in {goal.timeframe_months} months")
         
+        # Warning if unrealistic
+        if goal.required_monthly_savings > state.monthly_income * 0.8:
+            st.warning("⚠️ This goal may be too aggressive for your income level. Consider extending the timeframe or reducing the amount.")
+        
         st.divider()
     
     # Recent transactions
@@ -561,7 +663,7 @@ with st.sidebar:
     
     # Mode indicator
     if st.session_state.router.use_llm:
-        st.success("🤖 AI Mode: Active")
+        st.success("🤖 AI Mode: Active (Handles typos!)")
     else:
         st.warning("🔧 Offline Mode")
     
@@ -591,6 +693,10 @@ with st.sidebar:
         progress = min(state.goal.progress_percentage / 100, 1.0)
         st.progress(progress)
         st.caption(f"{state.goal.item}: {state.goal.progress_percentage:.1f}%")
+        
+        # Warning if unrealistic
+        if state.goal.required_monthly_savings > state.monthly_income * 0.8:
+            st.warning("⚠️ Goal may be unrealistic")
     
     st.divider()
     

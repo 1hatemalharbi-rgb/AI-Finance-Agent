@@ -1,6 +1,10 @@
 """
 Finance Engine: Rule-based budget management and decision making.
 All logic is deterministic and explainable - NO ML/AI decisions.
+
+ENHANCED VERSION with:
+- Unrealistic goal detection and warnings
+- Better feedback for impossible scenarios
 """
 import uuid
 from datetime import datetime
@@ -34,7 +38,7 @@ class FinanceEngine:
 
     def set_goal(self, item: str, target_amount: float, 
                  timeframe_months: int) -> str:
-        """Set a savings goal and adjust budgets."""
+        """Set a savings goal and adjust budgets with reality check."""
         goal = SavingsGoal(
             item=item,
             target_amount=target_amount,
@@ -44,13 +48,59 @@ class FinanceEngine:
         self.state.goal = goal
         self._recalculate_budgets()
         
+        # Check if goal is realistic
+        warning = self._check_goal_feasibility(goal)
+        
         response = f"🎯 Goal set: {item} for {target_amount:,.2f} SAR "
         response += f"(target: {timeframe_months} month{'s' if timeframe_months > 1 else ''})\n"
+        
+        # Show warning if unrealistic
+        if warning:
+            response += f"\n{warning}\n"
+        
         response += f"💡 Adjusting budgets to help you reach your goal...\n"
         response += f"   • Required monthly savings: {goal.required_monthly_savings:,.2f} SAR\n"
-        response += f"   • New daily discretionary limit: {self.state.daily_limit:,.2f} SAR"
+        
+        # Check if discretionary budget will be negative
+        if self.state.discretionary_budget < 0:
+            response += f"\n⚠️ WARNING: This goal leaves you with a negative discretionary budget!\n"
+            response += f"   • Your income after fixed expenses and goal savings: {self.state.discretionary_budget:,.2f} SAR\n"
+            response += f"   • Consider:\n"
+            response += f"     - Increasing income\n"
+            response += f"     - Reducing fixed expenses\n"
+            response += f"     - Extending goal timeframe\n"
+            response += f"     - Lowering goal amount\n"
+        elif self.state.discretionary_budget < 500:
+            response += f"\n💡 Note: This goal leaves you with only {self.state.discretionary_budget:,.2f} SAR per month for discretionary spending.\n"
+        else:
+            response += f"   • New daily discretionary limit: {self.state.daily_limit:,.2f} SAR"
         
         return response
+
+    def _check_goal_feasibility(self, goal: SavingsGoal) -> Optional[str]:
+        """Check if goal is realistic and return warning if not."""
+        if self.state.monthly_income == 0:
+            return "⚠️ WARNING: No income set! Please set your monthly income first."
+        
+        required_monthly = goal.required_monthly_savings
+        available_after_fixed = self.state.monthly_income - self.state.total_fixed_expenses
+        
+        # Check if goal requires more than 80% of income after fixed expenses
+        if required_monthly > available_after_fixed * 0.8:
+            percentage = (required_monthly / available_after_fixed * 100) if available_after_fixed > 0 else 999
+            return f"⚠️ UNREALISTIC GOAL: This requires {percentage:.0f}% of your income after fixed expenses!\n   • Required: {required_monthly:,.2f} SAR/month\n   • Available: {available_after_fixed:,.2f} SAR/month\n   • This will leave almost nothing for daily expenses."
+        
+        # Check if goal requires more than income
+        if required_monthly > self.state.monthly_income:
+            return f"⚠️ IMPOSSIBLE GOAL: Monthly requirement ({required_monthly:,.2f} SAR) exceeds your entire income ({self.state.monthly_income:,.2f} SAR)!\n   • Please adjust the goal amount or timeframe."
+        
+        # Check if timeframe is too short
+        reasonable_savings_rate = available_after_fixed * 0.5  # 50% of available income
+        if required_monthly > reasonable_savings_rate:
+            recommended_months = int(goal.target_amount / reasonable_savings_rate) + 1
+            return f"⚠️ CHALLENGING GOAL: This is very aggressive.\n   • Recommended timeframe: {recommended_months} months (for 50% savings rate)\n   • Current requirement: {required_monthly:,.2f} SAR/month ({required_monthly / available_after_fixed * 100:.0f}% of available income)"
+        
+        return None
 
     def check_affordability(self, item: str, amount: float) -> AffordabilityResponse:
         """
@@ -61,7 +111,7 @@ class FinanceEngine:
         remaining = self.state.remaining_discretionary
         
         # Rule 2: Calculate usage percentage
-        if amount > 0:
+        if self.state.discretionary_budget > 0 and amount > 0:
             usage_pct = (amount / self.state.discretionary_budget) * 100
         else:
             usage_pct = 0.0
@@ -85,7 +135,7 @@ class FinanceEngine:
                 else:
                     # Calculate delay in days
                     shortfall = required_monthly - can_save
-                    days_delay = (shortfall / required_monthly) * 30
+                    days_delay = (shortfall / required_monthly) * 30 if required_monthly > 0 else 0
                     goal_impact = f"⚠️ May delay goal by ~{int(days_delay)} days"
             else:
                 goal_impact = "❌ Would compromise your goal significantly"
@@ -210,6 +260,10 @@ class FinanceEngine:
             summary += f"({goal.progress_percentage:.1f}%)\n"
             summary += f"   • Required monthly: {goal.required_monthly_savings:,.2f} SAR\n"
             summary += f"   • Timeframe: {goal.timeframe_months} month(s)\n"
+            
+            # Add feasibility check
+            if goal.required_monthly_savings > self.state.monthly_income * 0.8:
+                summary += f"\n   ⚠️ This goal may be too aggressive for your income level.\n"
         
         # Recent transactions
         if self.state.transactions:
@@ -247,10 +301,12 @@ class FinanceEngine:
             self.state.monthly_income - total_fixed - self.state.savings_allocation
         )
         
-        # Ensure non-negative
+        # Handle negative discretionary budget (unrealistic scenario)
         if self.state.discretionary_budget < 0:
-            # If negative, reduce savings allocation
-            self.state.savings_allocation = max(0, self.state.monthly_income - total_fixed)
+            # Reduce savings allocation to avoid negative discretionary
+            # But ensure we at least try to save something if possible
+            max_possible_savings = max(0, self.state.monthly_income - total_fixed)
+            self.state.savings_allocation = max_possible_savings
             self.state.discretionary_budget = 0
         
         # Step 5: Calculate daily limit (assuming 30 days per month)
@@ -285,9 +341,6 @@ class FinanceEngine:
                 msg += f"   • Daily limit reduced to {new_daily_limit:,.2f} SAR\n"
                 msg += f"   • This helps stretch your remaining budget"
                 return msg
-        
-        # Rule: If <50% used and past mid-month, can reallocate surplus
-        # (Simplified: we don't track actual days, so skip this for now)
         
         return None
 
@@ -338,10 +391,12 @@ class FinanceEngine:
 
 I can help you make smart spending decisions! Here's what you can ask:
 
-**Setup:**
+**Setup (can also do from chat!):**
 • "My salary is 12000"
 • "Rent is 2500 monthly"
 • "I want to save 50000 for a car in 6 months"
+• "Change my salary to 15000"
+• "Update my goal to 100000 for house in 24 months"
 
 **Daily Use:**
 • "Can I buy a laptop for 5000?" - Check affordability
@@ -353,6 +408,7 @@ I can help you make smart spending decisions! Here's what you can ask:
 • I use rule-based logic - all decisions are explainable
 • Set a goal to get personalized budget recommendations
 • I'll adapt your daily limits based on spending patterns
+• I understand typos! "bogt" = "bought", "salery" = "salary"
 • All amounts are in SAR (Saudi Riyal)
 
 Try asking me something! 😊"""
