@@ -291,9 +291,7 @@ class FinanceEngine:
         if self.state.goal:
             required_savings = self.state.goal.required_monthly_savings
         
-        # Step 3: Allocate to savings (20% minimum or goal requirement, whichever is higher)
-        min_savings = self.state.monthly_income * 0.20
-        self.state.savings_allocation = max(min_savings, required_savings)
+      
         
         # Step 4: Calculate discretionary budget
         # Discretionary = Income - Fixed - Savings
