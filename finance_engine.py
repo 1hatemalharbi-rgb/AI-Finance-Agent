@@ -291,7 +291,12 @@ class FinanceEngine:
         if self.state.goal:
             required_savings = self.state.goal.required_monthly_savings
         
-      
+        # Step 3: Allocate to savings ONLY if goal is set
+        # FIXED: Don't force 20% savings if no goal
+        if self.state.goal:
+            self.state.savings_allocation = required_savings
+        else:
+            self.state.savings_allocation = 0.0
         
         # Step 4: Calculate discretionary budget
         # Discretionary = Income - Fixed - Savings
